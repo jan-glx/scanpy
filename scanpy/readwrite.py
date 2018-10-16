@@ -16,11 +16,10 @@ from . import settings
 from . import logging as logg
 
 # .gz and .bz2 suffixes are also allowed for text formats
-text_exts = {'csv',
+compressible_exts = {'csv', 'mtx', 'soft',
              'tsv', 'tab', 'data', 'txt'} # these four are all equivalent
 avail_exts = {'anndata', 'xlsx',
-              'h5', 'h5ad',
-              'soft.gz', 'mtx', 'loom'} | text_exts
+              'h5', 'h5ad', 'loom'} | compressible_exts
 """Available file formats for reading data. """
 
 
@@ -157,8 +156,15 @@ def read_10x_mtx(path, var_names='gene_symbols', make_unique=True, cache=False):
     -------
     An :class:`~anndata.AnnData`.
     """
-    adata = read(path + 'matrix.mtx', cache=cache).T  # transpose the data
-    genes = pd.read_csv(path + 'genes.tsv', header=None, sep='\t')
+    try:
+        adata = read(path + 'matrix.mtx', cache=cache).T  # transpose the data
+    except FileNotFoundError:
+        adata = read(path + 'matrix.mtx.gz', cache=cache).T  # transpose the data
+    try:
+        genes = pd.read_csv(path + 'genes.tsv', header=None, sep='\t')
+    except FileNotFoundError:
+        genes = pd.read_csv(path + 'genes.tsv.gz', header=None, sep='\t')
+        
     if var_names == 'gene_symbols':
         var_names = genes[1]
         if make_unique:
@@ -170,7 +176,12 @@ def read_10x_mtx(path, var_names='gene_symbols', make_unique=True, cache=False):
         adata.var['gene_symbols'] = genes[1].values
     else:
         raise ValueError('`var_names` needs to be \'gene_symbols\' or \'gene_ids\'')
-    adata.obs_names = pd.read_csv(path + 'barcodes.tsv', header=None)[0]
+        
+    try:
+        adata.obs_names = pd.read_csv(path + 'barcodes.tsv', header=None)[0]
+    except FileNotFoundError:
+        adata.obs_names = pd.read_csv(path + 'barcodes.tsv.gz', header=None)[0]
+        
     return adata
         
 
@@ -318,7 +329,7 @@ def _read(filename, backed=False, sheet=None, ext=None, delimiter=None,
             return read_hdf(filename, sheet)
     # read other file types
     filename_cache = (settings.cachedir + filename.lstrip(
-        './').replace('/', '-').replace('.' + ext, '.h5ad'))
+        './').replace('/', '-') + '.h5ad')
     if cache and os.path.exists(filename_cache):
         logg.info('... reading from cache file', filename_cache)
         adata = read_h5ad(filename_cache, backed=False)
@@ -346,7 +357,7 @@ def _read(filename, backed=False, sheet=None, ext=None, delimiter=None,
                          'separated text file', v=3)
                 logg.hint('change this by passing `ext` to sc.read')
             adata = read_text(filename, delimiter, first_column_names)
-        elif ext == 'soft.gz':
+        elif ext == 'soft':
             adata = _read_softgz(filename)
         elif ext == 'loom':
             adata = read_loom(filename=filename, **kwargs)
@@ -545,18 +556,16 @@ def is_valid_filename(filename, return_ext=False):
     """Check whether the argument is a filename."""
     ext = Path(filename).suffixes
 
-    # cases for gzipped/bzipped text files
-    if len(ext) == 2 and ext[0][1:] in text_exts and ext[1][1:] in ('gz', 'bz2'):
-        return ext[0][1:] if return_ext else True
-    elif ext and ext[-1][1:] in avail_exts:
+    if len(ext) >= 1 and ext[-1][1:] in avail_exts:
         return ext[-1][1:] if return_ext else True
-    elif ''.join(ext) == '.soft.gz':
-        return 'soft.gz' if return_ext else True
+    
+    if len(ext) >= 2 and ext[-2][1:] in compressible_exts and ext[-1][1:] in ('gz', 'bz2'):
+        return ext[-2][1:] if return_ext else True
+
+    if return_ext:
+        raise ValueError('"{}" does not end on a valid extension.\n'
+                         'Please, provide one of the available extensions:\n{}\n'
+                         'Additionally, compressed files with .gz and .bz2 extensions are also supported for text-based files:\n{}\n '
+                          .format(filename, avail_exts, compressable_exts))
     else:
-        if return_ext:
-            raise ValueError('"{}" does not end on a valid extension.\n'
-                             'Please, provide one of the available extensions.\n{}\n'
-                             'Text files with .gz and .bz2 extensions are also supported.'
-                             .format(filename, avail_exts))
-        else:
-            return False
+        return False
